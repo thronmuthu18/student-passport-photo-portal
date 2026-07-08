@@ -189,7 +189,7 @@ document.addEventListener('DOMContentLoaded', () => {
     formData.append('photo', selectedFile);
 
     try {
-      const response = await fetch('/upload', {
+      const response = await fetch('https://student-passport-photo-portal.onrender.com/upload', {
         method: 'POST',
         body: formData
       });
