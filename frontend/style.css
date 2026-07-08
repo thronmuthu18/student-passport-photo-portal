@@ -541,6 +541,38 @@ body {
   font-size: 0.9rem;
 }
 
+/* Download Section Styling */
+.footer-divider {
+  width: 100%;
+  height: 1px;
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+.btn-secondary-custom {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  color: var(--text-secondary);
+  font-family: 'Outfit', sans-serif;
+  font-weight: 500;
+  font-size: 0.95rem;
+  letter-spacing: 0.5px;
+  transition: all var(--transition-speed) ease;
+  text-decoration: none;
+  display: inline-block;
+}
+
+.btn-secondary-custom:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.15);
+  color: var(--text-primary);
+  transform: translateY(-1px);
+}
+
+.btn-secondary-custom:active {
+  transform: translateY(0);
+}
+
 /* Responsive Customization */
 @media (max-width: 576px) {
   .portal-card {
