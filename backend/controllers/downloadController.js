@@ -3,11 +3,24 @@ const path = require('path');
 const archiver = require('archiver');
 
 const downloadAllPhotos = async (req, res) => {
+  const providedKey = req.query.key;
+  const secretKey = process.env.DOWNLOAD_SECRET;
+
+  // 1. Verify if key is missing
+  if (!providedKey) {
+    return res.status(401).set('Content-Type', 'text/plain').send('Unauthorized');
+  }
+
+  // 2. Verify if key is incorrect
+  if (providedKey !== secretKey) {
+    return res.status(403).set('Content-Type', 'text/plain').send('Forbidden');
+  }
+
   const uploadsDir = path.join(__dirname, '../../uploads');
 
   // Verify uploads directory exists
   if (!fs.existsSync(uploadsDir)) {
-    return res.status(200).set('Content-Type', 'text/plain').send('No photos have been uploaded yet.');
+    return res.status(200).set('Content-Type', 'text/plain').send('No uploaded photos found.');
   }
 
   try {
@@ -22,7 +35,7 @@ const downloadAllPhotos = async (req, res) => {
 
     // Check if there are any files to zip
     if (photoFiles.length === 0) {
-      return res.status(200).set('Content-Type', 'text/plain').send('No photos have been uploaded yet.');
+      return res.status(200).set('Content-Type', 'text/plain').send('No uploaded photos found.');
     }
 
     // Set download headers for ZIP streaming
@@ -46,7 +59,6 @@ const downloadAllPhotos = async (req, res) => {
     // Catch archiving errors
     archive.on('error', (err) => {
       console.error('Archiver error:', err);
-      // If headers haven't been sent yet, send a 500 error, otherwise end the response
       if (!res.headersSent) {
         res.status(500).send({ success: false, message: 'Could not generate ZIP archive.' });
       }

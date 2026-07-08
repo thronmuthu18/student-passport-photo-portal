@@ -26,7 +26,6 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Success Screen
   const successScreen = document.getElementById('successScreen');
-  const downloadSection = document.getElementById('downloadSection');
   
   let selectedFile = null;
   const MAX_FILE_SIZE_BYTES = 40 * 1024; // 40 KB
@@ -238,17 +237,15 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function showSuccessState() {
-    // Hide Form and Download button, Show Success
+    // Hide Form, Show Success
     uploadForm.classList.add('d-none');
     successScreen.classList.remove('d-none');
-    downloadSection.classList.add('d-none');
     
     // Automatically reset and show the form after 4 seconds
     setTimeout(() => {
-      // Fade out success screen and fade in form & download button
+      // Fade out success screen and fade in form
       successScreen.classList.add('d-none');
       uploadForm.classList.remove('d-none');
-      downloadSection.classList.remove('d-none');
       
       // Reset inputs & files
       studentNameInput.value = '';
