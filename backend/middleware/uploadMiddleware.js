@@ -22,6 +22,21 @@ const storage = multer.diskStorage({
 // File filter for JPG, JPEG, PNG
 const fileFilter = (req, file, cb) => {
   const allowedMimeTypes = ['image/jpeg', 'image/jpg', 'image/png'];
+  const allowedExtensions = ['.jpg', '.jpeg', '.png'];
+  const fileExt = path.extname(file.originalname).toLowerCase();
+
+  // 1. Verify extension
+  if (!allowedExtensions.includes(fileExt)) {
+    return cb(new Error('Only JPG, JPEG, and PNG images are allowed.'), false);
+  }
+
+  // 2. Reject double extensions
+  const dotsCount = (file.originalname.match(/\./g) || []).length;
+  if (dotsCount !== 1) {
+    return cb(new Error('Invalid filename format (double extensions are forbidden).'), false);
+  }
+
+  // 3. Verify MIME type
   if (allowedMimeTypes.includes(file.mimetype)) {
     cb(null, true);
   } else {

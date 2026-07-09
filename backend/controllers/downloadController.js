@@ -6,13 +6,21 @@ const downloadAllPhotos = async (req, res) => {
   const providedKey = req.query.key;
   const secretKey = process.env.DOWNLOAD_SECRET;
 
-  // 1. Verify if key is missing
+  // 1. Verify if DOWNLOAD_SECRET is configured on the server
+  if (!secretKey || secretKey.trim() === '') {
+    console.error(`[${new Date().toISOString()}] [ERROR] DOWNLOAD_SECRET environment variable is not configured on Render!`);
+    return res.status(500).set('Content-Type', 'text/plain').send('Server configuration error.');
+  }
+
+  // 2. Verify if key is missing
   if (!providedKey) {
+    console.warn(`[${new Date().toISOString()}] [WARN] Unauthorized ZIP Download Attempt (Missing Key): IP=${req.ip}`);
     return res.status(401).set('Content-Type', 'text/plain').send('Unauthorized');
   }
 
-  // 2. Verify if key is incorrect
+  // 3. Verify if key is incorrect
   if (providedKey !== secretKey) {
+    console.warn(`[${new Date().toISOString()}] [WARN] Forbidden ZIP Download Attempt (Incorrect Key): IP=${req.ip}`);
     return res.status(403).set('Content-Type', 'text/plain').send('Forbidden');
   }
 
