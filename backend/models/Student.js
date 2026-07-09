@@ -19,7 +19,11 @@ const studentSchema = new mongoose.Schema({
   },
   photoPath: {
     type: String,
-    required: [true, 'Photo path is required']
+    required: false
+  },
+  photoFileId: {
+    type: mongoose.Schema.Types.ObjectId,
+    required: false
   },
   uploadedAt: {
     type: Date,

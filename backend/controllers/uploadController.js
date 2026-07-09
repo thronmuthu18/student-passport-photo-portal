@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const mongoose = require('mongoose');
 const Student = require('../models/Student');
 
 // Helper to escape HTML characters
@@ -35,15 +36,11 @@ const sanitizeRegisterNumber = (regNum) => {
     .replace(/[^A-Z0-9]/g, ''); // Keep only alphanumeric
 };
 
-// Helper to check image magic bytes signature
-const verifyImageSignature = (filePath) => {
+// Helper to check image magic bytes signature on memory buffer
+const verifyImageSignature = (buffer) => {
   try {
-    const buffer = Buffer.alloc(8);
-    const fd = fs.openSync(filePath, 'r');
-    fs.readSync(fd, buffer, 0, 8, 0);
-    fs.closeSync(fd);
-    
-    const hex = buffer.toString('hex').toUpperCase();
+    if (!buffer || buffer.length < 8) return null;
+    const hex = buffer.slice(0, 8).toString('hex').toUpperCase();
 
     // PNG signature: 89504E470D0A1A0A
     if (hex.startsWith('89504E470D0A1A0A')) {
@@ -62,16 +59,13 @@ const verifyImageSignature = (filePath) => {
 };
 
 const handleUpload = async (req, res) => {
-  const tempFile = req.file;
+  const memoryFile = req.file;
 
   try {
     const { studentName, registerNumber } = req.body;
 
     // 1. Check for missing fields
-    if (!studentName || !registerNumber || !tempFile) {
-      if (tempFile && fs.existsSync(tempFile.path)) {
-        fs.unlinkSync(tempFile.path);
-      }
+    if (!studentName || !registerNumber || !memoryFile) {
       console.warn(`[${new Date().toISOString()}] [WARN] Invalid Request: Missing fields. IP=${req.ip}`);
       return res.status(400).json({
         success: false,
@@ -81,9 +75,6 @@ const handleUpload = async (req, res) => {
 
     // 2. Prevent Object / Prototype Pollution injection by forcing string checks
     if (typeof studentName !== 'string' || typeof registerNumber !== 'string') {
-      if (fs.existsSync(tempFile.path)) {
-        fs.unlinkSync(tempFile.path);
-      }
       console.warn(`[${new Date().toISOString()}] [WARN] Invalid Request: Fields are not strings. IP=${req.ip}`);
       return res.status(400).json({
         success: false,
@@ -94,9 +85,6 @@ const handleUpload = async (req, res) => {
     // 3. Name Validation (Length Check & Sanitization)
     const nameTrimmed = studentName.trim();
     if (nameTrimmed.length < 2 || nameTrimmed.length > 50) {
-      if (fs.existsSync(tempFile.path)) {
-        fs.unlinkSync(tempFile.path);
-      }
       console.warn(`[${new Date().toISOString()}] [WARN] Invalid Request: Name length out of bounds. IP=${req.ip}`);
       return res.status(400).json({
         success: false,
@@ -108,9 +96,6 @@ const handleUpload = async (req, res) => {
     const regTrimmed = registerNumber.trim().toUpperCase();
     const regPattern = /^[A-Z0-9]{8,15}$/;
     if (!regPattern.test(regTrimmed)) {
-      if (fs.existsSync(tempFile.path)) {
-        fs.unlinkSync(tempFile.path);
-      }
       console.warn(`[${new Date().toISOString()}] [WARN] Invalid Request: Register number validation failure. Reg="${regTrimmed}", IP=${req.ip}`);
       return res.status(400).json({
         success: false,
@@ -122,9 +107,6 @@ const handleUpload = async (req, res) => {
     const sanitizedName = sanitizeName(nameTrimmed);
 
     if (!sanitizedRegNum || !sanitizedName) {
-      if (fs.existsSync(tempFile.path)) {
-        fs.unlinkSync(tempFile.path);
-      }
       console.warn(`[${new Date().toISOString()}] [WARN] Invalid Request: Sanitized values are empty. IP=${req.ip}`);
       return res.status(400).json({
         success: false,
@@ -132,25 +114,19 @@ const handleUpload = async (req, res) => {
       });
     }
 
-    // 5. Image Binary Signature Check (Magic Bytes Verification)
-    const signatureType = verifyImageSignature(tempFile.path);
+    // 5. Image Binary Signature Check (Magic Bytes Verification on buffer)
+    const signatureType = verifyImageSignature(memoryFile.buffer);
     if (!signatureType) {
-      if (fs.existsSync(tempFile.path)) {
-        fs.unlinkSync(tempFile.path);
-      }
-      console.warn(`[${new Date().toISOString()}] [WARN] Invalid Request: Image binary signature check failed. File="${tempFile.originalname}", IP=${req.ip}`);
+      console.warn(`[${new Date().toISOString()}] [WARN] Invalid Request: Image binary signature check failed. File="${memoryFile.originalname}", IP=${req.ip}`);
       return res.status(400).json({
         success: false,
         message: 'Invalid image binary signature. Upload only valid PNG or JPG photos.'
       });
     }
 
-    // 6. Check for duplicate Register Number in database (Query injection protected via strict schema cast)
+    // 6. Check for duplicate Register Number in database
     const existingStudent = await Student.findOne({ registerNumber: sanitizedRegNum });
     if (existingStudent) {
-      if (fs.existsSync(tempFile.path)) {
-        fs.unlinkSync(tempFile.path);
-      }
       console.warn(`[${new Date().toISOString()}] [WARN] Duplicate Register Number Attempt: Reg="${sanitizedRegNum}", IP=${req.ip}`);
       return res.status(400).json({
         success: false,
@@ -158,56 +134,89 @@ const handleUpload = async (req, res) => {
       });
     }
 
-    // 7. Safe Renaming and File Placement
-    const fileExt = path.extname(tempFile.originalname).toLowerCase();
-    const finalFileName = `${sanitizedRegNum}-${sanitizedName}${fileExt}`;
-    const targetPath = path.join(__dirname, '../../uploads', finalFileName);
+    // 7. GridFS Bucket Setup
+    const bucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db, {
+      bucketName: 'studentPhotos'
+    });
 
-    // If final file already exists physically but not in DB, delete the existing file to avoid orphans
-    if (fs.existsSync(targetPath)) {
-      try {
-        fs.unlinkSync(targetPath);
-      } catch (err) {
-        console.error(`[${new Date().toISOString()}] [ERROR] Failed to delete existing file:`, err.message);
-      }
+    const fileExt = path.extname(memoryFile.originalname).toLowerCase();
+    const finalFileName = `${sanitizedRegNum}-${sanitizedName}${fileExt}`;
+
+    // 8. Stream the actual image bytes to MongoDB Atlas GridFS
+    let fileId;
+    try {
+      fileId = await new Promise((resolve, reject) => {
+        const uploadStream = bucket.openUploadStream(finalFileName, {
+          contentType: memoryFile.mimetype,
+          metadata: {
+            studentName: sanitizedName,
+            registerNumber: sanitizedRegNum,
+            originalName: memoryFile.originalname,
+            uploadedAt: new Date()
+          }
+        });
+
+        uploadStream.on('error', (err) => {
+          reject(err);
+        });
+
+        uploadStream.on('finish', () => {
+          resolve(uploadStream.id);
+        });
+
+        uploadStream.write(memoryFile.buffer);
+        uploadStream.end();
+      });
+    } catch (uploadError) {
+      console.error(`[${new Date().toISOString()}] [ERROR] GridFS upload failed:`, uploadError.message);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to upload photo to database.'
+      });
     }
 
-    // Move/rename file
-    fs.renameSync(tempFile.path, targetPath);
+    // 9. Save Student metadata record referencing GridFS photoFileId
+    try {
+      const newStudent = new Student({
+        studentName: sanitizedName,
+        registerNumber: sanitizedRegNum,
+        photoFileName: finalFileName,
+        photoPath: `/uploads/${finalFileName}`, // Kept for backward compatibility
+        photoFileId: fileId
+      });
 
-    // 8. Save metadata to MongoDB
-    const relativePhotoPath = `/uploads/${finalFileName}`;
-    const newStudent = new Student({
-      studentName: sanitizedName,
-      registerNumber: sanitizedRegNum,
-      photoFileName: finalFileName,
-      photoPath: relativePhotoPath
-    });
+      await newStudent.save();
 
-    await newStudent.save();
+      console.log(`[${new Date().toISOString()}] [INFO] Upload Successful: Reg="${sanitizedRegNum}", Name="${sanitizedName}", FileId="${fileId}", IP=${req.ip}`);
 
-    console.log(`[${new Date().toISOString()}] [INFO] Upload Successful: Reg="${sanitizedRegNum}", Name="${sanitizedName}", IP=${req.ip}`);
+      return res.status(200).json({
+        success: true,
+        message: 'Upload Successful',
+        student: {
+          studentName: newStudent.studentName,
+          registerNumber: newStudent.registerNumber
+        }
+      });
 
-    return res.status(200).json({
-      success: true,
-      message: 'Upload Successful',
-      student: {
-        studentName: newStudent.studentName,
-        registerNumber: newStudent.registerNumber
+    } catch (saveError) {
+      console.error(`[${new Date().toISOString()}] [ERROR] MongoDB Student record save failed:`, saveError.message);
+
+      // ATOMIC ROLLBACK: Delete orphaned GridFS binary file
+      try {
+        await bucket.delete(fileId);
+        console.log(`[${new Date().toISOString()}] [INFO] Atomic Rollback: Cleaned up orphaned GridFS file ID: ${fileId}`);
+      } catch (deleteError) {
+        console.error(`[${new Date().toISOString()}] [ERROR] Atomic Rollback failed to delete file ${fileId}:`, deleteError.message);
       }
-    });
+
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to save student details. Photo upload rolled back.'
+      });
+    }
 
   } catch (error) {
     console.error(`[${new Date().toISOString()}] [ERROR] Upload failed internally:`, error.message);
-    
-    // Cleanup upload file on server error
-    if (tempFile && fs.existsSync(tempFile.path)) {
-      try {
-        fs.unlinkSync(tempFile.path);
-      } catch (err) {
-        console.error(`[${new Date().toISOString()}] [ERROR] Cleanup failed:`, err.message);
-      }
-    }
     return res.status(500).json({
       success: false,
       message: 'An error occurred during upload. Please try again.'

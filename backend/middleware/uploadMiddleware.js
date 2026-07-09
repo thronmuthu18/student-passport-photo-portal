@@ -8,16 +8,8 @@ if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-// Configure storage with temporary filenames to prevent overwrites before validation
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    cb(null, 'temp-' + uniqueSuffix + path.extname(file.originalname).toLowerCase());
-  }
-});
+// Configure storage to use memory storage for GridFS uploads
+const storage = multer.memoryStorage();
 
 // File filter for JPG, JPEG, PNG
 const fileFilter = (req, file, cb) => {

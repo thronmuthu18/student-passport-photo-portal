@@ -1,6 +1,6 @@
-const fs = require('fs');
-const path = require('path');
+const mongoose = require('mongoose');
 const archiver = require('archiver');
+const Student = require('../models/Student');
 
 const downloadAllPhotos = async (req, res) => {
   const providedKey = req.query.key;
@@ -24,25 +24,23 @@ const downloadAllPhotos = async (req, res) => {
     return res.status(403).set('Content-Type', 'text/plain').send('Forbidden');
   }
 
-  const uploadsDir = path.join(__dirname, '../../uploads');
-
-  // Verify uploads directory exists
-  if (!fs.existsSync(uploadsDir)) {
-    return res.status(200).set('Content-Type', 'text/plain').send('No uploaded photos found.');
-  }
-
   try {
-    // Read files in uploads directory
-    const files = fs.readdirSync(uploadsDir);
+    // 4. Fetch all student metadata records
+    const students = await Student.find();
+    if (students.length === 0) {
+      return res.status(200).set('Content-Type', 'text/plain').send('No uploaded photos found.');
+    }
 
-    // Filter out temporary files and keep only valid photo extensions
-    const photoFiles = files.filter(file => {
-      const ext = path.extname(file).toLowerCase();
-      return !file.startsWith('temp-') && ['.jpg', '.jpeg', '.png'].includes(ext);
+    // Initialize GridFS bucket
+    const bucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db, {
+      bucketName: 'studentPhotos'
     });
 
-    // Check if there are any files to zip
-    if (photoFiles.length === 0) {
+    // 5. Check if there are any documents with valid file references in GridFS
+    const filesCollection = mongoose.connection.db.collection('studentPhotos.files');
+    const dbFilesCount = await filesCollection.countDocuments();
+    
+    if (dbFilesCount === 0) {
       return res.status(200).set('Content-Type', 'text/plain').send('No uploaded photos found.');
     }
 
@@ -55,39 +53,62 @@ const downloadAllPhotos = async (req, res) => {
       zlib: { level: 9 } // Maximum compression level
     });
 
-    // Catch warnings (e.g. stat failures)
+    // Catch warnings
     archive.on('warning', (err) => {
-      if (err.code === 'ENOENT') {
-        console.warn('Archiver warning (ENOENT):', err);
-      } else {
-        throw err;
-      }
+      console.warn(`[${new Date().toISOString()}] [WARN] Archiver warning:`, err.message);
     });
 
     // Catch archiving errors
     archive.on('error', (err) => {
-      console.error('Archiver error:', err);
+      console.error(`[${new Date().toISOString()}] [ERROR] Archiver error:`, err.message);
       if (!res.headersSent) {
-        res.status(500).send({ success: false, message: 'Could not generate ZIP archive.' });
+        res.status(500).set('Content-Type', 'text/plain').send('Could not generate ZIP archive.');
       }
     });
 
     // Pipe the archive output directly to the Express response
     archive.pipe(res);
 
-    // Add each photo to the archive
-    photoFiles.forEach(file => {
-      const filePath = path.join(uploadsDir, file);
-      archive.file(filePath, { name: file });
-    });
+    let validPhotosCount = 0;
+    let missingPhotosCount = 0;
 
-    // Finalize the archive stream (this closes the pipe and flushes output)
+    // Loop through all student records to append their photos from GridFS
+    for (const student of students) {
+      if (!student.photoFileId) {
+        console.warn(`[${new Date().toISOString()}] [WARN] Student record for Reg="${student.registerNumber}" lacks a GridFS file reference.`);
+        missingPhotosCount++;
+        continue;
+      }
+
+      // Check if file actually exists in the GridFS files metadata collection
+      const fileMeta = await filesCollection.findOne({ _id: student.photoFileId });
+      if (!fileMeta) {
+        console.warn(`[${new Date().toISOString()}] [WARN] GridFS file referenced by Reg="${student.registerNumber}" (File ID: ${student.photoFileId}) was not found in database.`);
+        missingPhotosCount++;
+        continue;
+      }
+
+      // Open a GridFS download stream and append it directly to the archiver stream
+      const downloadStream = bucket.openDownloadStream(student.photoFileId);
+      
+      // Handle read stream errors to prevent crashing the response
+      downloadStream.on('error', (streamErr) => {
+        console.error(`[${new Date().toISOString()}] [ERROR] Stream read error for Reg="${student.registerNumber}":`, streamErr.message);
+      });
+
+      archive.append(downloadStream, { name: student.photoFileName });
+      validPhotosCount++;
+    }
+
+    // Finalize the archive stream (closes the pipe and flushes to browser)
     await archive.finalize();
 
+    console.log(`[${new Date().toISOString()}] [INFO] ZIP Download Completed. Total Students Checked: ${students.length}, Zipped Photos: ${validPhotosCount}, Missing Photos: ${missingPhotosCount}`);
+
   } catch (error) {
-    console.error('Error zipping uploads:', error);
+    console.error(`[${new Date().toISOString()}] [ERROR] Dynamic ZIP zipping failed:`, error.message);
     if (!res.headersSent) {
-      res.status(500).set('Content-Type', 'text/plain').send('An error occurred while zipping files.');
+      res.status(500).set('Content-Type', 'text/plain').send('An error occurred while compiling the ZIP archive.');
     }
   }
 };
